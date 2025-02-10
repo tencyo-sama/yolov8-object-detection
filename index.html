@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YOLOv8 Object Detection</title>
   <!-- TensorFlow.js の読み込み -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.2.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <style>
     body {
       margin: 0;
@@ -307,13 +307,13 @@
             console.log("outputs:", outputs);
 
             const postprocessedPredictions = await postprocess(
-              outputs[0], // outputs[0] または適切なキー
+              outputs, // outputs[0] または適切なキー
               video.videoWidth,
               video.videoHeight
             );
 
             tf.dispose(tensor);
-            outputs[0].dispose();
+            outputs.dispose();
 
             drawPredictions(postprocessedPredictions);
         } catch (error) {
