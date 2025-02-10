@@ -7,7 +7,7 @@
   <!-- TensorFlow.js の読み込み -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <style>
-        body {
+    body {
       margin: 0;
       padding: 0;
       width: 100vw;
@@ -301,26 +301,25 @@
 
         const tensor = preprocess(video);
         try {
-            const outputs = await model.executeAsync(tensor);
+            const outputs = await model.execute(tensor); // execute() に変更
 
             // outputs の構造を確認 (コンソールに出力)
             console.log("outputs:", outputs);
 
             const postprocessedPredictions = await postprocess(
-              outputs[0],
+              outputs[0], // outputs[0] または適切なキー
               video.videoWidth,
               video.videoHeight
             );
 
             tf.dispose(tensor);
-            outputs[0].dispose();
+            outputs[0].dispose(); // または適切なキー
 
             drawPredictions(postprocessedPredictions);
         } catch (error) {
-            console.error("Error in detectFrame:", error); // エラーを出力
-            // 必要に応じて、ユーザーにエラーメッセージを表示
+            console.error("Error in detectFrame:", error);
             updateMessage("推論中にエラーが発生しました");
-            stopDetection(); // 検出を停止
+            stopDetection();
         }
         animationFrameId = requestAnimationFrame(detectFrame);
     }
