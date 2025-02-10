@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YOLOv8 Object Detection</title>
+  <!-- TensorFlow.js の読み込み -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <style>
+    /* ... (前回のCSSスタイルをここにコピー) ... */
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #000;
+    }
+    .container {
+      width: 100%;
+      height: 85vh;
+      position: relative;
+      overflow: hidden;
+    }
+    #output {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .button-container {
+      position: fixed;
+      bottom: 20px;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      z-index: 1000;
+    }
+    button {
+      padding: 15px 30px;
+      font-size: 18px;
+      border-radius: 25px;
+      border: none;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      cursor: pointer;
+    }
+    button:disabled {
+      background: rgba(200, 200, 200, 0.9);
+      cursor: not-allowed;
+    }
+    .message {
+      position: fixed;
+      bottom: 100px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 10px 20px;
+      border-radius: 5px;
+      font-size: 16px;
+      z-index: 1000;
+      text-align: center;
+      max-width: 80%;
+    }
+    .loading-indicator {
+      border: 4px solid #f3f3f3;
+      border-radius: 50%;
+      border-top: 4px solid #3498db;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+      display: none;
+      margin: 10px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="output"></canvas>
+    <video id="input" style="display: none;" playsinline></video>
+  </div>
+  <div class="message" id="message">
+    <div class="loading-indicator" id="loading"></div>
+    <div id="message-text"></div>
+  </div>
+  <div class="button-container">
+    <button id="start">開始</button>
+    <button id="stop" disabled>停止</button>
+  </div>
+
+  <script>
+    // ... (JavaScriptコード) ...
+    let model;
+    let isRunning = false;
+    let video, canvas, messageDiv, messageText, loadingIndicator, startButton, stopButton, ctx;
+    let animationFrameId;
+
+    //モデルの入力サイズ
+    const MODEL_INPUT_WIDTH = 640;  // YOLOv8 モデルの入力幅
+    const MODEL_INPUT_HEIGHT = 640; // YOLOv8 モデルの入力高さ
+    //検出閾値
+    const SCORE_THRESHOLD = 0.5;  // 信頼度の閾値
+    const IOU_THRESHOLD = 0.45;   // IoU (Intersection over Union) の閾値
+    const CLASS_NAMES = [
+        'clip',
+    ];
+    //色の設定
+    const classColors = {};
+    CLASS_NAMES.forEach((className) => {
+        classColors[className] = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+    });
+
+    // DOM要素の取得と初期化
+    function initDOMElements() {
+        video = document.getElementById('input');
+        canvas = document.getElementById('output');
+        messageDiv = document.getElementById('message');
+        messageText = document.getElementById('message-text');
+        loadingIndicator = document.getElementById('loading');
+        startButton = document.getElementById('start');
+        stopButton = document.getElementById('stop');
+        ctx = canvas.getContext('2d');
+    }
+
+    //イベントリスナーの設定
+    function setupEventListeners() {
+        window.addEventListener('resize', resizeCanvas);
+        startButton.addEventListener('click', startDetection);
+        stopButton.addEventListener('click', stopDetection);
+    }
+    // カメラの起動
+    async function startCamera() {
+        const constraints = {
+            video: {
+                facingMode: 'environment',
+                width: { ideal: 2520 },
+                height: { ideal: 1080 }
+            }
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await video.play();
+    }
+    // YOLOv8 モデルの読み込み (Google Colab で変換した場合)
+    async function loadModel() {
+        // 重要: GitHub Pagesでは相対パスでモデルを指定
+        model = await tf.loadGraphModel('./best_web_model/model.json');  // best_web_model フォルダに配置
+        return model;
+    }
+
+    //検出の前処理
+    function preprocess(video) {
+        let tensor = tf.browser.fromPixels(video)
+        const resized = tensor.resizeBilinear([MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT])
+        const batched = resized.expandDims(0)
+        return batched.toFloat().div(tf.scalar(255))   // 0-255 -> 0-1 に正規化
+    }
+
+    // NMS (Non-Maximum Suppression)
+    async function nonMaxSuppression(boxes, scores, maxOutputSize, iouThreshold, scoreThreshold) {
+      const boxes_ = tf.tensor2d(boxes);
+      const scores_ = tf.tensor1d(scores);
+      const nmsIndex = await tf.image.nonMaxSuppressionAsync(
+        boxes_,
+        scores_,
+        maxOutputSize,
+        iouThreshold,
+        scoreThreshold
+      );
+
+      const selectedIndices = nmsIndex.dataSync();
+      nmsIndex.dispose();
+      boxes_.dispose();
+      scores_.dispose();
+      return selectedIndices;
+    }
+
+    // 検出結果を後処理して、描画可能な形にする関数
+    async function postprocess(output, originalWidth, originalHeight) {
+        let [boxes, scores, classes] = output;
+
+        // バッチ次元を削除し、CPUに転送
+        boxes = boxes[0];
+        scores = scores[0];
+        classes = classes[0];
+
+      // 信頼度が閾値以上のものをフィルタリング
+      const maxScores = scores.map(scoreArray => Math.max(...scoreArray));
+      const validIndices = [];
+        for (let i = 0; i < maxScores.length; i++) {
+            if (maxScores[i] > SCORE_THRESHOLD) {
+                validIndices.push(i);
+            }
+        }
+        if(validIndices.length === 0){
+          return []; //有効な検出がない場合は空の配列を返す
+        }
+        const selectedBoxes = validIndices.map(i => boxes[i]);
+        const selectedScores = validIndices.map(i => maxScores[i]);
+        const selectedClasses = validIndices.map(i => {
+          let classIndex = 0;
+          for(let j = 0; j < scores[i].length; j++){
+            if (scores[i][j] === selectedScores[j]){
+              classIndex = j;
+              break;
+            }
+          }
+          return classIndex;
+        });
+
+
+        // Non-Maximum Suppression (NMS) を適用
+        const nmsIndices = await nonMaxSuppression(
+          selectedBoxes,
+          selectedScores,
+          10, //maxOutputSize
+          IOU_THRESHOLD,
+          SCORE_THRESHOLD
+        );
+        
+        const finalBoxes = [];
+        const finalScores = [];
+        const finalClasses = [];
+
+        // NMSで選択されたインデックスに基づいて結果をフィルタリング
+        nmsIndices.forEach(index => {
+            finalBoxes.push(selectedBoxes[index]);
+            finalScores.push(selectedScores[index]);
+            finalClasses.push(selectedClasses[index]);
+        });
+
+        const predictions = [];
+        for (let i = 0; i < finalBoxes.length; i++) {
+            let box = finalBoxes[i];
+            const [x1, y1, x2, y2] = box;
+
+            // 元の画像のサイズにスケールバック
+            const scaleX = originalWidth / MODEL_INPUT_WIDTH;
+            const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
+            const scaledBox = {
+              x: x1 * scaleX,
+              y: y1 * scaleY,
+              width: (x2 - x1) * scaleX,
+              height: (y2 - y1) * scaleY,
+            };
+
+            predictions.push({
+                bbox: scaledBox,
+                class: CLASS_NAMES[finalClasses[i]], // クラスIDをクラス名に変換
+                score: finalScores[i],
+            });
+        }
+        return predictions;
+    }
+
+    // 検出処理の開始
+    async function startDetection() {
+      try {
+        updateMessage("モデルを読み込み中...");
+        showLoading(true);
+        startButton.disabled = true;
+
+        if(!model){
+          model = await loadModel();
+        }
+
+        updateMessage("カメラを起動中...");
+        await startCamera();
+
+        isRunning = true;
+        stopButton.disabled = false;
+        updateMessage("検出中", 2000);
+        showLoading(false);
+        detectFrame();
+
+      } catch (error) {
+          handleDetectionError(error);
+      }
+    }
+
+    //検出処理の停止
+    async function stopDetection() {
+      isRunning = false;
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(track => track.stop());
+        video.srcObject = null;
+      }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);  //ビデオ停止時にキャンバスを消去する
+      startButton.disabled = false;
+      stopButton.disabled = true;
+      updateMessage('停止しました');
+    }
+    // フレームごとの検出処理
+    async function detectFrame() {
+        if (!isRunning) return;
+        //try {
+            const tensor = preprocess(video);                 // 前処理
+            const outputs = await model.executeAsync(tensor); // 推論実行
+            //const predictions = await postprocess(outputs, video.videoWidth, video.videoHeight);  // 後処理
+            
+            const postprocessedPredictions = await postprocess(
+              outputs.map(output => output.arraySync()),
+              video.videoWidth,
+              video.videoHeight
+            );
+            
+            tf.dispose(tensor); // 不要になったテンソルを解放
+            outputs.forEach(t => t.dispose());
+
+            drawPredictions(postprocessedPredictions);        // 検出結果の描画
+            animationFrameId = requestAnimationFrame(detectFrame);
+        //} catch (error) {
+        //    handleDetectionError(error);
+        //}
+    }
+
+    // 検出結果の描画
+    function drawPredictions(predictions) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);  //描画前に毎回消去を行う
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      predictions.forEach(prediction => {
+        const {x, y, width, height} = prediction.bbox;
+        const className = prediction.class;
+        const color = classColors[className] || '#FFFFFF'; // クラスに対応する色を取得
+
+        // Draw bounding box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, y, width, height);
+
+        // Draw label
+        ctx.fillStyle = color;
+        ctx.font = '16px Arial';
+        ctx.fillText(`${className} ${Math.round(prediction.score * 100)}%`, x, y - 5);
+      });
+    }
+
+    // エラー処理
+    function handleDetectionError(error) {
+        console.error('Error:', error);
+        let errorMessage = 'エラーが発生しました';
+        if (error.name === 'NotAllowedError') {
+            errorMessage = 'カメラへのアクセスが許可されていません';
+        } else if (error.name === 'NotFoundError') {
+            errorMessage = 'カメラが見つかりません';
+        } else if (error.name === 'NotReadableError') { //追加：カメラが他のアプリで使用されている
+            errorMessage = "カメラが他のアプリケーションによって使用されているため、アクセスできません。"
+        }
+        updateMessage(errorMessage);
+        stopDetection(); // エラーが発生した場合、検出を停止
+    }
+
+    // キャンバスのリサイズ
+    function resizeCanvas() {
+        const container = document.querySelector('.container');
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+    }
+
+    // ローディング表示の切り替え
+    function showLoading(show) {
+        loadingIndicator.style.display = show ? 'block' : 'none';
+    }
+
+    // メッセージの更新
+    function updateMessage(text, timeout = 0) {
+        messageText.textContent = text;
+        if (timeout > 0) {
+            setTimeout(() => {
+                messageText.textContent = '';
+            }, timeout);
+        }
+    }
+
+    // グローバルエラーハンドラ
+    window.onerror = function (msg, url, lineNo, columnNo, error) {
+        console.error('Global error:', msg, url, lineNo, columnNo, error);
+        updateMessage('エラーが発生しました: ' + msg);
+        showLoading(false);
+        startButton.disabled = false; // エラーが発生しても、開始ボタンは再度有効にする
+        stopButton.disabled = true;  // 停止ボタンは無効のままにする
+        return false;
+    };
+
+    // ページのロード完了時に実行
+    window.addEventListener('load', async () => {
+      initDOMElements();        //DOM要素の取得
+      setupEventListeners();     //イベントリスナーの設定
+      resizeCanvas();             //キャンバスのサイズを設定
+      updateMessage('準備完了');    //準備完了メッセージを表示
+    });
+  </script>
+</body>
+</html>
