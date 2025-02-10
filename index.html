@@ -182,76 +182,102 @@
 
     // 検出結果を後処理して、描画可能な形にする関数
     async function postprocess(outputs, originalWidth, originalHeight) {
+        const numPredictions = outputs.shape[1]; // 予測の数 (例: 8400)
+        const numClasses = outputs.shape[2] - 5; // クラス数 (例: 80)
 
-      const numPredictions = outputs.shape[1]; // 例: [1, 8400, 85] -> 8400
-      const numClasses = outputs.shape[2] - 5;    // 例: [1, 8400, 85] -> 80 (クラス数)
+        const data = await outputs.data(); // データを取得
 
-      const data = await outputs.data(); // データを取得 (同期処理)
+        const boxes = [];
+        const scores = [];
+        const classIds = [];
 
-      const boxes = [];
-      const scores = [];
-      const classIds = [];
+        // 各予測について
+        for (let i = 0; i < numPredictions; i++) {
+            const offset = i * (numClasses + 5); // 各予測の開始位置
 
-      // バウンディングボックス、スコア、クラスIDの抽出
-      for (let i = 0; i < numPredictions; i++) {
-        const offset = i * (numClasses + 5);
-        const x = data[offset];
-        const y = data[offset + 1];
-        const width = data[offset + 2];
-        const height = data[offset + 3];
-        const confidence = data[offset + 4];
+            // データの抽出
+            const x = data[offset];         // バウンディングボックスの中心 x 座標
+            const y = data[offset + 1];     // バウンディングボックスの中心 y 座標
+            const width = data[offset + 2];   // バウンディングボックスの幅
+            const height = data[offset + 3];  // バウンディングボックスの高さ
+            const confidence = data[offset + 4]; // 信頼度
 
-        if(confidence < SCORE_THRESHOLD) continue;
+            // 信頼度が低い場合はスキップ
+            if (confidence < SCORE_THRESHOLD) continue;
 
-        const classScores = data.slice(offset + 5, offset + 5 + numClasses);
-        let maxScore = -Infinity;
-        let maxClassId = -1;
+            // クラススコアの抽出
+            const classScores = data.slice(offset + 5, offset + 5 + numClasses);
 
-        for (let j = 0; j < numClasses; j++) {
-          if (classScores[j] > maxScore) {
-            maxScore = classScores[j];
-            maxClassId = j;
-          }
+            // 最も高いクラススコアとそのIDを特定
+            let maxScore = -Infinity;
+            let maxClassId = -1;
+            for (let j = 0; j < numClasses; j++) {
+                if (classScores[j] > maxScore) {
+                    maxScore = classScores[j];
+                    maxClassId = j;
+                }
+            }
+
+            // クラススコアが低い場合はスキップ
+            if (maxScore < SCORE_THRESHOLD) continue;
+
+            // バウンディングボックスの座標を計算 (中心座標から左上隅の座標へ変換)
+            const centerX = x * MODEL_INPUT_WIDTH;   // スケールバック (必要に応じて)
+            const centerY = y * MODEL_INPUT_HEIGHT;  // スケールバック (必要に応じて)
+            const boxWidth = width * MODEL_INPUT_WIDTH;   // スケールバック (必要に応じて)
+            const boxHeight = height * MODEL_INPUT_HEIGHT;  // スケールバック (必要に応じて)
+
+            const x1 = centerX - boxWidth / 2;  // 左上隅の x 座標
+            const y1 = centerY - boxHeight / 2;  // 左上隅の y 座標
+            const x2 = centerX + boxWidth / 2;  // 右下隅の x 座標
+            const y2 = centerY + boxHeight / 2;  // 右下隅の y 座標
+
+            boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
+            scores.push(confidence * maxScore); // 信頼度とクラススコアを掛け合わせる
+            classIds.push(maxClassId);
         }
 
-        if (maxScore > SCORE_THRESHOLD) {
-          boxes.push([(x - width / 2), (y - height / 2), (x + width / 2), (y + height / 2)]); //xywhからxyxy形式へ
-          scores.push(maxScore);
-          classIds.push(maxClassId);
-        }
-      }
-        // Non-Maximum Suppression (NMS) を適用
-        const nmsIndices = await nonMaxSuppression(
-          boxes,
-          scores,
-          10, //maxOutputSize
-          IOU_THRESHOLD,
-          SCORE_THRESHOLD
-        );
+    // NMS を適用 (Non-Maximum Suppression)
+    const nmsIndices = await nonMaxSuppression(
+        boxes,
+        scores,
+        10,
+        IOU_THRESHOLD,
+        SCORE_THRESHOLD
+    );
 
-        const predictions = [];
-        nmsIndices.forEach(index => {
-          const box = boxes[index];
-          const [x1, y1, x2, y2] = box;
+    const predictions = [];
+    // NMS で選択された予測のみを処理
+    nmsIndices.forEach(index => {
+        const box = boxes[index];
+        const classId = classIds[index];
+        const score = scores[index];
 
-          // 元の画像のサイズにスケールバック
-          const scaleX = originalWidth / MODEL_INPUT_WIDTH;
-          const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
+        // スケールバック (元の画像のサイズに合わせる)
+        const scaleX = originalWidth / MODEL_INPUT_WIDTH;
+        const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
 
-          predictions.push({
-              bbox: {
-                  x: x1 * scaleX,
-                  y: y1 * scaleY,
-                  width: (x2 - x1) * scaleX,
-                  height: (y2 - y1) * scaleY
-              },
-              class: CLASS_NAMES[classIds[index]],
-              score: scores[index]
-          });
+        const x1 = box[0] * scaleX;
+        const y1 = box[1] * scaleY;
+        const x2 = box[2] * scaleX;
+        const y2 = box[3] * scaleY;
+        const width = (x2 - x1);
+        const height = (y2 - y1);
+
+        predictions.push({
+            bbox: {
+                x: x1,
+                y: y1,
+                width: width,
+                height: height
+            },
+            class: CLASS_NAMES[classId],
+            score: score
         });
+    });
 
-        return predictions;
-    }
+    return predictions;
+}
 
     // 検出処理の開始
     async function startDetection() {
