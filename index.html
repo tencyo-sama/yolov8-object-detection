@@ -7,6 +7,7 @@
   <!-- TensorFlow.js の読み込み -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <style>
+    /* ... (スタイルは変更なし) ... */
     body {
       margin: 0;
       padding: 0;
@@ -182,18 +183,11 @@
 
     // 検出結果を後処理して、描画可能な形にする関数
     async function postprocess(outputs, originalWidth, originalHeight) {
-      // YOLOv8 (v8.0 以降) の場合、出力は通常、単一のテンソル
-      let outputTensor = outputs[0]; // または outputs['output0'] のようにキーでアクセスする場合も
-      if (!outputTensor) {
-            // 'output0' などのキー名は、モデルによって異なる可能性がある
-            console.error("No output tensor found in model outputs:", outputs);
-            return [];
-      }
 
-      const numPredictions = outputTensor.shape[1]; // 例: [1, 8400, 85] -> 8400
-      const numClasses = outputTensor.shape[2] - 5;    // 例: [1, 8400, 85] -> 80 (クラス数)
+      const numPredictions = outputs.shape[1]; // 例: [1, 8400, 85] -> 8400
+      const numClasses = outputs.shape[2] - 5;    // 例: [1, 8400, 85] -> 80 (クラス数)
 
-      const data = await outputTensor.data(); // データを取得 (同期処理)
+      const data = await outputs.data(); // データを取得 (同期処理)
 
       const boxes = [];
       const scores = [];
@@ -310,27 +304,18 @@
             const outputs = await model.executeAsync(tensor);
 
             // outputs の構造を確認 (コンソールに出力)
-            //console.log("outputs:", outputs);
+            console.log("outputs:", outputs);
 
-            // outputs はオブジェクトなので、直接 array() を呼び出す
+            // outputs はオブジェクトなので、[0]でテンソル本体へアクセス
             const postprocessedPredictions = await postprocess(
-              outputs, // outputsをそのまま渡す
+              outputs[0], // outputs[0]を渡す
               video.videoWidth,
               video.videoHeight
             );
 
             tf.dispose(tensor);
-            // outputs が配列でない場合は、以下のように処理
-            if (Array.isArray(outputs)) {
-                outputs.forEach(t => t.dispose());
-            } else {
-                // outputs がオブジェクトの場合 (キーを使って反復処理)
-                for (const key in outputs) {
-                    if (outputs.hasOwnProperty(key)) {
-                        outputs[key].dispose();
-                    }
-                }
-            }
+            // outputs[0] がテンソル本体
+            outputs[0].dispose();
 
             drawPredictions(postprocessedPredictions);
             animationFrameId = requestAnimationFrame(detectFrame);
