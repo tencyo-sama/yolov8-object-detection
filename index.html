@@ -100,10 +100,7 @@
     let video, canvas, messageDiv, messageText, loadingIndicator, startButton, stopButton, ctx;
     let animationFrameId;
 
-    //モデルの入力サイズ
-    const MODEL_INPUT_WIDTH = 640;  // YOLOv8 モデルの入力幅
-    const MODEL_INPUT_HEIGHT = 640; // YOLOv8 モデルの入力高さ
-    //検出閾値
+    // 検出閾値
     const SCORE_THRESHOLD = 0.5;  // 信頼度の閾値
     const IOU_THRESHOLD = 0.45;   // IoU (Intersection over Union) の閾値
     const CLASS_NAMES = [
@@ -133,19 +130,22 @@
         startButton.addEventListener('click', startDetection);
         stopButton.addEventListener('click', stopDetection);
     }
-    // カメラの起動
+
+   // カメラの起動
     async function startCamera() {
         const constraints = {
             video: {
                 facingMode: 'environment',
-                width: { ideal: 2520 },
-                height: { ideal: 1080 }
+                //PCでテストする場合は解像度を固定すると動作しやすい
+                width: { ideal: 640 },
+                height: { ideal: 640 }
             }
         };
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
         await video.play();
     }
+
     // YOLOv8 モデルの読み込み
     async function loadModel() {
         // 重要: GitHub Pagesでは相対パスでモデルを指定
@@ -156,9 +156,7 @@
     //検出の前処理
     function preprocess(video) {
         let tensor = tf.browser.fromPixels(video)
-        const resized = tensor.resizeBilinear([MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT])
-        const batched = resized.expandDims(0)
-        return batched.toFloat().div(tf.scalar(255))   // 0-255 -> 0-1 に正規化
+        return tensor.toFloat().div(tf.scalar(255))   // 0-255 -> 0-1 に正規化
     }
 
     // NMS (Non-Maximum Suppression)
@@ -210,12 +208,6 @@
             // 信頼度が低い場合はスキップ
             if (confidence < SCORE_THRESHOLD) continue;
 
-            // スケールバック (必要に応じて)
-            x1 = x1 * MODEL_INPUT_WIDTH;
-            y1 = y1 * MODEL_INPUT_HEIGHT;
-            x2 = x2 * MODEL_INPUT_WIDTH;
-            y2 = y2 * MODEL_INPUT_HEIGHT;
-
             boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
             scores.push(confidence);
             classIds.push(0); // クラスが1つしかないため、常に 0
@@ -236,15 +228,10 @@
             const box = boxes[index];
             const classId = classIds[index];
             const score = scores[index];
-
-            // スケールバック (元の画像のサイズに合わせる)
-            const scaleX = originalWidth / MODEL_INPUT_WIDTH;
-            const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
-
-            const x1 = box[0] * scaleX;
-            const y1 = box[1] * scaleY;
-            const x2 = box[2] * scaleX;
-            const y2 = box[3] * scaleY;
+            const x1 = box[0];
+            const y1 = box[1];
+            const x2 = box[2];
+            const y2 = box[3];
             const width = (x2 - x1);
             const height = (y2 - y1);
 
@@ -276,6 +263,9 @@
 
         updateMessage("カメラを起動中...");
         await startCamera();
+
+        //カメラの解像度に合わせてCanvasのサイズを設定
+        resizeCanvas();
 
         isRunning = true;
         stopButton.disabled = false;
@@ -315,7 +305,7 @@
 
             // outputs の構造を確認 (コンソールに出力)
             console.log("outputs:", outputs);
-
+        
             const postprocessedPredictions = await postprocess(
                 outputs, // outputs[0] または適切なキー
                 video.videoWidth,
@@ -337,24 +327,24 @@
 
     // 検出結果の描画
     function drawPredictions(predictions) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);  //描画前に毎回消去を行う
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);  //描画前に毎回消去を行う
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      predictions.forEach(prediction => {
-        const {x, y, width, height} = prediction.bbox;
-        const className = prediction.class;
-        const color = classColors[className] || '#FFFFFF'; // クラスに対応する色を取得
+        predictions.forEach(prediction => {
+            const { x, y, width, height } = prediction.bbox;
+            const className = prediction.class;
+            const color = classColors[className] || '#FFFFFF'; // クラスに対応する色を取得
 
-        // Draw bounding box
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 4;
-        ctx.strokeRect(x, y, width, height);
+            // Draw bounding box
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 4;
+            ctx.strokeRect(x, y, width, height);
 
-        // Draw label
-        ctx.fillStyle = color;
-        ctx.font = '16px Arial';
-        ctx.fillText(`${className} ${Math.round(prediction.score * 100)}%`, x, y - 5);
-      });
+            // Draw label
+            ctx.fillStyle = color;
+            ctx.font = '16px Arial';
+            ctx.fillText(`${className} ${Math.round(prediction.score * 100)}%`, x, y - 5);
+        });
     }
 
     // エラー処理
@@ -365,7 +355,7 @@
             errorMessage = 'カメラへのアクセスが許可されていません';
         } else if (error.name === 'NotFoundError') {
             errorMessage = 'カメラが見つかりません';
-        } else if (error.name === 'NotReadableError') { //追加：カメラが他のアプリケーションによって使用されている
+        } else if (error.name === 'NotReadableError') { //追加：カメラが他のアプリで使用されている
             errorMessage = "カメラが他のアプリケーションによって使用されているため、アクセスできません。"
         }
         updateMessage(errorMessage);
@@ -374,9 +364,8 @@
 
     // キャンバスのリサイズ
     function resizeCanvas() {
-        const container = document.querySelector('.container');
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
     }
 
     // ローディング表示の切り替え
@@ -408,7 +397,6 @@
     window.addEventListener('load', async () => {
       initDOMElements();        //DOM要素の取得
       setupEventListeners();     //イベントリスナーの設定
-      resizeCanvas();             //キャンバスのサイズを設定
       updateMessage('準備完了');    //準備完了メッセージを表示
     });
   </script>
