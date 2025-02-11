@@ -152,13 +152,11 @@
         this.IOU_THRESHOLD = 0.45;
         this.CLASS_NAMES = ['clip'];
         
-        // DOM elements
         this.initDOMElements();
         this.setupEventListeners();
-        
-        // Performance monitoring
         this.fpsUpdateInterval = setInterval(() => this.updateFPS(), 1000);
       }
+
 
       initDOMElements() {
         this.video = document.getElementById('input');
@@ -181,9 +179,9 @@
       async loadModel() {
         try {
           this.model = await tf.loadGraphModel('./best_web_model/model.json');
-          // Warmup the model
+          // Warmup
           const dummyInput = tf.zeros([1, this.MODEL_INPUT_SIZE, this.MODEL_INPUT_SIZE, 3]);
-          await this.model.executeAsync(dummyInput);
+          await this.model.predict(dummyInput);
           tf.dispose(dummyInput);
         } catch (error) {
           throw new Error(`モデルの読み込みに失敗しました: ${error.message}`);
@@ -205,6 +203,7 @@
           
           return new Promise((resolve) => {
             this.video.onloadedmetadata = () => {
+              this.video.play();
               this.resizeCanvas();
               resolve();
             };
@@ -224,75 +223,112 @@
       }
 
       async postprocess(outputTensor, originalWidth, originalHeight) {
-        const [boxes, scores] = tf.tidy(() => {
-          const [batchBoxes, batchScores] = tf.unstack(outputTensor);
-          return [batchBoxes.squeeze(), batchScores.squeeze()];
-        });
-
-        const boxesArray = await boxes.array();
-        const scoresArray = await scores.array();
-        
-        const predictions = [];
-        
-        for (let i = 0; i < boxesArray.length; i++) {
-          const score = scoresArray[i];
-          if (score > this.SCORE_THRESHOLD) {
-            const box = boxesArray[i];
-            const [x1, y1, x2, y2] = [
-              box[0] * originalWidth,
-              box[1] * originalHeight,
-              box[2] * originalWidth,
-              box[3] * originalHeight
-            ];
+        try {
+          // outputTensorの形状を確認
+          console.log('Output tensor shape:', outputTensor.shape);
+          
+          // データを取得
+          const data = await outputTensor.data();
+          const [batchSize, numBoxes, numValues] = outputTensor.shape;
+          
+          const predictions = [];
+          
+          // 各検出結果をループ
+          for (let i = 0; i < numBoxes; i++) {
+            const offset = i * numValues;
+            
+            // YOLOv8の出力形式に合わせて座標とスコアを取得
+            const x = data[offset + 0];
+            const y = data[offset + 1];
+            const w = data[offset + 2];
+            const h = data[offset + 3];
+            const confidence = data[offset + 4];
+            
+            if (confidence < this.SCORE_THRESHOLD) continue;
+            
+            // 正規化された座標を元のサイズに変換
+            const x1 = (x - w/2) * originalWidth;
+            const y1 = (y - h/2) * originalHeight;
+            const width = w * originalWidth;
+            const height = h * originalHeight;
             
             predictions.push({
               bbox: {
                 x: x1,
                 y: y1,
-                width: x2 - x1,
-                height: y2 - y1
+                width: width,
+                height: height
               },
               class: this.CLASS_NAMES[0],
-              score: score
+              score: confidence
             });
           }
+          
+          return predictions;
+        } catch (error) {
+          console.error('Postprocess error:', error);
+          throw error;
         }
-
-        tf.dispose([boxes, scores]);
-        return predictions;
       }
 
       drawPredictions(predictions) {
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
 
-        // Draw FPS
+        // FPSの表示
         this.ctx.fillStyle = 'white';
         this.ctx.font = '14px monospace';
         this.ctx.fillText(`FPS: ${this.fps.toFixed(1)}`, 10, 20);
 
+        // 検出結果の描画
         predictions.forEach(prediction => {
           const { x, y, width, height } = prediction.bbox;
           const score = prediction.score;
 
-          // Draw box
+          // バウンディングボックスの描画
           this.ctx.strokeStyle = '#00FF00';
           this.ctx.lineWidth = 2;
           this.ctx.strokeRect(x, y, width, height);
 
-          // Draw label background
+          // ラベルの背景描画
           const label = `${prediction.class} ${(score * 100).toFixed(0)}%`;
           const labelWidth = this.ctx.measureText(label).width + 10;
           this.ctx.fillStyle = '#00FF00';
           this.ctx.fillRect(x, y - 25, labelWidth, 20);
 
-          // Draw label text
+          // ラベルテキストの描画
           this.ctx.fillStyle = '#000000';
           this.ctx.font = '16px Arial';
           this.ctx.fillText(label, x + 5, y - 10);
         });
 
         this.frameCount++;
+      }
+
+      async detectFrame() {
+        if (!this.isRunning) return;
+
+        try {
+          const inputTensor = this.preprocess(this.video);
+          const outputTensor = this.model.predict(inputTensor);
+          
+          const predictions = await this.postprocess(
+            outputTensor,
+            this.video.videoWidth,
+            this.video.videoHeight
+          );
+
+          this.drawPredictions(predictions);
+          
+          // Tensorのクリーンアップ
+          tf.dispose([inputTensor, outputTensor]);
+          
+          requestAnimationFrame(() => this.detectFrame());
+        } catch (error) {
+          console.error('Detection error:', error);
+          this.showMessage('検出中にエラーが発生しました');
+          this.stop();
+        }
       }
 
       updateFPS() {
