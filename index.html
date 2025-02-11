@@ -1,3 +1,8 @@
+video要素のサイズが確定した後に、resizeCanvas関数が呼び出されるようになります。
+
+**修正後の `index.html` 全文:**
+
+```html
 <!DOCTYPE html>
 <html>
 <head>
@@ -134,18 +139,28 @@
         stopButton.addEventListener('click', stopDetection);
     }
     // カメラの起動
-    async function startCamera() {
-        const constraints = {
-            video: {
-                facingMode: 'environment',
-                width: { exact: 640 },  // exact を指定
-                height: { exact: 640 } // exact を指定
-            }
-        };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream;
-        await video.play();
-    }
+        async function startCamera() {
+            const constraints = {
+                video: {
+                    facingMode: 'environment',
+                    width: { ideal: 640 },
+                    height: { ideal: 640 }
+                }
+            };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            await video.play();
+
+            // カメラの実際の解像度を取得してコンソールに出力
+            console.log("Camera resolution:", video.videoWidth, video.videoHeight);
+    
+          video.addEventListener('loadedmetadata', () => {
+            console.log("video width:", video.videoWidth);
+            console.log("video height:", video.videoHeight);
+            resizeCanvas(); // video のサイズが確定した後に resizeCanvas を呼び出す
+          });
+
+        }
     // YOLOv8 モデルの読み込み
     async function loadModel() {
         // 重要: GitHub Pagesでは相対パスでモデルを指定
@@ -154,7 +169,7 @@
     }
 
     //検出の前処理
-    function preprocess(video) {
+   function preprocess(video) {
         let tensor = tf.browser.fromPixels(video);
         const resized = tensor.resizeBilinear([MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT]); // リサイズ処理を追加
        // リサイズ後の形状を検証
@@ -296,12 +311,6 @@
         updateMessage("カメラを起動中...");
         await startCamera();
 
-    video.addEventListener('loadedmetadata', () => {
-      console.log("video width:", video.videoWidth);
-      console.log("video height:", video.videoHeight);
-    });
-
-
         isRunning = true;
         stopButton.disabled = false;
         updateMessage("検出中", 2000);
@@ -392,21 +401,21 @@
             errorMessage = 'カメラが見つかりません';
         } else if (error.name === 'NotReadableError') { //追加：カメラが他のアプリケーションによって使用されている
             errorMessage = "カメラが他のアプリケーションによって使用されているため、アクセスできません。"
+        } else if (error.name === 'OverconstrainedError') {
+            errorMessage = "カメラの解像度設定が高すぎます。";
         }
         updateMessage(errorMessage);
         stopDetection(); // エラーが発生した場合、検出を停止
     }
 
     // キャンバスのリサイズ
-    function resizeCanvas() {
-    
-    //canvasのアスペクト比をカメラのものと一致させる
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const container = document.querySelector('.container');
-        container.style.width = `${video.videoWidth}px`;
-        container.style.height = `${video.videoHeight}px`;
-}
+        function resizeCanvas() {
+            canvas.width = video.videoWidth;   // video要素の幅に合わせる
+            canvas.height = video.videoHeight;  // video要素の高さに合わせる
+            const container = document.querySelector('.container');
+            container.style.width = `${video.videoWidth}px`;
+            container.style.height = `${video.videoHeight}px`;
+    }
 
     // ローディング表示の切り替え
     function showLoading(show) {
@@ -437,7 +446,8 @@
     window.addEventListener('load', async () => {
       initDOMElements();        //DOM要素の取得
       setupEventListeners();     //イベントリスナーの設定
-       updateMessage('準備完了');    //準備完了メッセージを表示
+      //resizeCanvas();             //キャンバスのサイズを設定  ここは削除
+      updateMessage('準備完了');    //準備完了メッセージを表示
     });
   </script>
 </body>
