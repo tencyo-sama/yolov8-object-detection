@@ -202,19 +202,23 @@
 
             // データの抽出
             const confidence = data[offset];   // 信頼度
-            const x1 = data[offset + 1];     // バウンディングボックスの左上隅 x 座標
-            const y1 = data[offset + 2];     // バウンディングボックスの左上隅 y 座標
-            const x2 = data[offset + 3];  // バウンディングボックスの右下隅 x 座標
-            const y2 = data[offset + 4];  // バウンディングボックスの右下隅 y 座標
-
+            let x1 = data[offset + 1];     // バウンディングボックスの左上隅 x 座標
+            let y1 = data[offset + 2];     // バウンディングボックスの左上隅 y 座標
+            let x2 = data[offset + 3];  // バウンディングボックスの右下隅 x 座標
+            let y2 = data[offset + 4];  // バウンディングボックスの右下隅 y 座標
 
             // 信頼度が低い場合はスキップ
             if (confidence < SCORE_THRESHOLD) continue;
 
+            // スケールバック (必要に応じて)
+            x1 = x1 * MODEL_INPUT_WIDTH;
+            y1 = y1 * MODEL_INPUT_HEIGHT;
+            x2 = x2 * MODEL_INPUT_WIDTH;
+            y2 = y2 * MODEL_INPUT_HEIGHT;
+
             boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
             scores.push(confidence);
             classIds.push(0); // クラスが1つしかないため、常に 0
-
         }
 
         // NMS を適用 (Non-Maximum Suppression)
