@@ -289,7 +289,7 @@
         }
         
         // 出力テンソルを取り出す (例: outputs[0] または outputs.output0 など)
-        const outputTensor = outputs; //
+        const outputTensor = outputs[0]; //
 
         const postprocessedPredictions = await postprocess(
           outputTensor, // outputTensor を渡す
