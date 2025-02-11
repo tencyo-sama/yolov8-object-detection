@@ -224,51 +224,101 @@
 
       async postprocess(outputTensor, originalWidth, originalHeight) {
         try {
-          // outputTensorの形状を確認
-          console.log('Output tensor shape:', outputTensor.shape);
-          
+          // 出力テンソルを転置して扱いやすい形式に変換
+          const transposed = outputTensor.transpose([0, 2, 1]);
+          const [batch, anchors, data] = transposed.shape;
+    
           // データを取得
-          const data = await outputTensor.data();
-          const [batchSize, numBoxes, numValues] = outputTensor.shape;
-          
+          const outputData = await transposed.data();
           const predictions = [];
-          
-          // 各検出結果をループ
-          for (let i = 0; i < numBoxes; i++) {
-            const offset = i * numValues;
-            
-            // YOLOv8の出力形式に合わせて座標とスコアを取得
-            const x = data[offset + 0];
-            const y = data[offset + 1];
-            const w = data[offset + 2];
-            const h = data[offset + 3];
-            const confidence = data[offset + 4];
-            
-            if (confidence < this.SCORE_THRESHOLD) continue;
-            
-            // 正規化された座標を元のサイズに変換
-            const x1 = (x - w/2) * originalWidth;
-            const y1 = (y - h/2) * originalHeight;
-            const width = w * originalWidth;
-            const height = h * originalHeight;
-            
-            predictions.push({
-              bbox: {
-                x: x1,
-                y: y1,
-                width: width,
-                height: height
-              },
-              class: this.CLASS_NAMES[0],
-              score: confidence
-            });
+    
+          // 各アンカーボックスについて処理
+          for (let i = 0; i < anchors; i++) {
+            const baseOffset = i * data;
+            const confidence = outputData[baseOffset + 4];
+      
+            if (confidence > this.SCORE_THRESHOLD) {
+              // YOLOv8の出力から座標を取得
+              const x = outputData[baseOffset + 0];
+              const y = outputData[baseOffset + 1];
+              const w = outputData[baseOffset + 2];
+              const h = outputData[baseOffset + 3];
+        
+              // 正規化された座標を画像サイズに変換
+              // YOLOv8は0-1の範囲で出力するため、直接乗算でOK
+              const x1 = Math.max(0, x * originalWidth);
+              const y1 = Math.max(0, y * originalHeight);
+              const width = Math.min(w * originalWidth, originalWidth - x1);
+              const height = Math.min(h * originalHeight, originalHeight - y1);
+        
+              // 画像の範囲内に収まるように調整
+              if (width > 0 && height > 0) {
+                predictions.push({
+                  bbox: {
+                    x: x1,
+                    y: y1,
+                    width: width,
+                    height: height
+                  },
+                  class: this.CLASS_NAMES[0],
+                  score: confidence
+                });
+              }
+            }
           }
-          
-          return predictions;
+    
+          // リソースの解放
+          tf.dispose(transposed);
+    
+          // 重複する検出結果をフィルタリング
+          return this.nms(predictions);
         } catch (error) {
           console.error('Postprocess error:', error);
           throw error;
         }
+      }
+
+      // 重複する検出結果をフィルタリングするNMS（Non-Maximum Suppression）の実装
+      nms(boxes, iouThreshold = 0.45) {
+        // スコアでソート
+        const sortedBoxes = boxes.sort((a, b) => b.score - a.score);
+        const selected = [];
+  
+        for (const current of sortedBoxes) {
+          let keep = true;
+    
+          // 既に選択されたボックスとのIoUを確認
+          for (const item of selected) {
+            const iou = this.calculateIoU(current.bbox, item.bbox);
+            if (iou > iouThreshold) {
+              keep = false;
+              break;
+            }
+          }
+    
+          if (keep) {
+            selected.push(current);
+          }
+        }
+  
+        return selected;
+      }
+
+      // IoU（Intersection over Union）の計算
+      calculateIoU(box1, box2) {
+        const x1 = Math.max(box1.x, box2.x);
+        const y1 = Math.max(box1.y, box2.y);
+        const x2 = Math.min(box1.x + box1.width, box2.x + box2.width);
+        const y2 = Math.min(box1.y + box1.height, box2.y + box2.height);
+  
+        if (x2 < x1 || y2 < y1) return 0;
+  
+        const intersection = (x2 - x1) * (y2 - y1);
+        const area1 = box1.width * box1.height;
+        const area2 = box2.width * box2.height;
+        const union = area1 + area2 - intersection;
+  
+        return intersection / union;
       }
 
       drawPredictions(predictions) {
