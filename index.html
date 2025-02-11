@@ -100,7 +100,10 @@
     let video, canvas, messageDiv, messageText, loadingIndicator, startButton, stopButton, ctx;
     let animationFrameId;
 
-    // 検出閾値
+    //モデルの入力サイズ
+    const MODEL_INPUT_WIDTH = 640;  // YOLOv8 モデルの入力幅
+    const MODEL_INPUT_HEIGHT = 640; // YOLOv8 モデルの入力高さ
+    //検出閾値
     const SCORE_THRESHOLD = 0.5;  // 信頼度の閾値
     const IOU_THRESHOLD = 0.45;   // IoU (Intersection over Union) の閾値
     const CLASS_NAMES = [
@@ -130,22 +133,19 @@
         startButton.addEventListener('click', startDetection);
         stopButton.addEventListener('click', stopDetection);
     }
-
-   // カメラの起動
+    // カメラの起動
     async function startCamera() {
         const constraints = {
             video: {
                 facingMode: 'environment',
-                //PCでテストする場合は解像度を固定すると動作しやすい
-                width: { ideal: 640 },
-                height: { ideal: 640 }
+                width: { ideal: 2520 },
+                height: { ideal: 1080 }
             }
         };
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
         await video.play();
     }
-
     // YOLOv8 モデルの読み込み
     async function loadModel() {
         // 重要: GitHub Pagesでは相対パスでモデルを指定
@@ -156,7 +156,9 @@
     //検出の前処理
     function preprocess(video) {
         let tensor = tf.browser.fromPixels(video)
-        return tensor.toFloat().div(tf.scalar(255))   // 0-255 -> 0-1 に正規化
+        //const resized = tensor.resizeBilinear([MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT])
+        const batched = tensor.expandDims(0)
+        return batched.toFloat().div(tf.scalar(255))   // 0-255 -> 0-1 に正規化
     }
 
     // NMS (Non-Maximum Suppression)
@@ -179,76 +181,89 @@
     }
 
     // 検出結果を後処理して、描画可能な形にする関数
-    async function postprocess(outputs, originalWidth, originalHeight) {
-        // 1. テンソルを転置 (transpose)
-        const transposed = tf.transpose(outputs, [0, 2, 1]);
+        async function postprocess(outputs, originalWidth, originalHeight) {
+            // 1. テンソルを転置 (transpose)
+            const transposed = tf.transpose(outputs, [0, 2, 1]);
 
-        // 2. テンソルの形状を変更 (reshape)
-        const reshaped = tf.reshape(transposed, [8400, 5]);
+            // 2. テンソルの形状を変更 (reshape)
+            const reshaped = tf.reshape(transposed, [8400, 5]);
 
-        const numPredictions = reshaped.shape[0]; // 予測の数 (例: 8400)
+            const numPredictions = reshaped.shape[0]; // 予測の数 (例: 8400)
 
-        const boxes = [];
-        const scores = [];
-        const classIds = [];
+            const boxes = [];
+            const scores = [];
+            const classIds = [];
 
-        const data = await reshaped.data(); // データを取得
+            const data = await reshaped.data(); // データを取得
 
-        // 各予測について
-        for (let i = 0; i < numPredictions; i++) {
-            const offset = i * 5; // 各予測の開始位置
+            // 各予測について
+            for (let i = 0; i < numPredictions; i++) {
+                const offset = i * 5; // 各予測の開始位置
 
-            // データの抽出
-            const confidence = data[offset];   // 信頼度
-            let x1 = data[offset + 1];     // バウンディングボックスの左上隅 x 座標
-            let y1 = data[offset + 2];     // バウンディングボックスの左上隅 y 座標
-            let x2 = data[offset + 3];  // バウンディングボックスの右下隅 x 座標
-            let y2 = data[offset + 4];  // バウンディングボックスの右下隅 y 座標
+                // データの抽出
+                const confidence = data[offset];   // 信頼度
+                let x1 = data[offset + 1];     // バウンディングボックスの左上隅 x 座標
+                let y1 = data[offset + 2];     // バウンディングボックスの左上隅 y 座標
+                let x2 = data[offset + 3];  // バウンディングボックスの右下隅 x 座標
+                let y2 = data[offset + 4];  // バウンディングボックスの右下隅 y 座標
+        // 検証: 座標の値を出力
+        console.log("予測", i, "座標:", x1, y1, x2, y2, "信頼度:", confidence);
+                // 信頼度が低い場合はスキップ
+                if (confidence < SCORE_THRESHOLD) continue;
 
-            // 信頼度が低い場合はスキップ
-            if (confidence < SCORE_THRESHOLD) continue;
+                //スケールバックは不要
+                // スケールバック (元の画像のサイズに合わせる)
+                const scaleX = originalWidth / MODEL_INPUT_WIDTH;
+                const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
 
-            boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
-            scores.push(confidence);
-            classIds.push(0); // クラスが1つしかないため、常に 0
-        }
+                x1 = x1 * scaleX;
+                y1 = y1 * scaleY;
+                x2 = x2 * scaleX;
+                y2 = y2 * scaleY;
+                    
+        // 座標が画面外に出ないようにクリップ
+        x1 = Math.max(0, Math.min(x1, originalWidth));
+        y1 = Math.max(0, Math.min(y1, originalHeight));
+        x2 = Math.max(0, Math.min(x2, originalWidth));
+        y2 = Math.max(0, Math.min(y2, originalHeight));
 
-        // NMS を適用 (Non-Maximum Suppression)
-        const nmsIndices = await nonMaxSuppression(
-            boxes,
-            scores,
-            10,
-            IOU_THRESHOLD,
-            SCORE_THRESHOLD
-        );
+                boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
+                scores.push(confidence);
+                classIds.push(0); // クラスが1つしかないため、常に 0
+            }
 
-        const predictions = [];
-        // NMS で選択された予測のみを処理
-        nmsIndices.forEach(index => {
-            const box = boxes[index];
-            const classId = classIds[index];
-            const score = scores[index];
-            const x1 = box[0];
-            const y1 = box[1];
-            const x2 = box[2];
-            const y2 = box[3];
-            const width = (x2 - x1);
-            const height = (y2 - y1);
+            // NMS を適用 (Non-Maximum Suppression)
+            const nmsIndices = await nonMaxSuppression(
+                boxes,
+                scores,
+                10,
+                IOU_THRESHOLD,
+                SCORE_THRESHOLD
+            );
 
-            predictions.push({
-                bbox: {
-                    x: x1,
-                    y: y1,
-                    width: width,
-                    height: height
-                },
-                class: CLASS_NAMES[classId],
-                score: score
+            const predictions = [];
+            // NMS で選択された予測のみを処理
+            nmsIndices.forEach(index => {
+                const box = boxes[index];
+                const classId = classIds[index];
+                const score = scores[index];
+
+        //スケールバックは不要なため削除
+
+                predictions.push({
+                    bbox: {
+                        x: box[0], // スケールバック済みの座標を使用
+                        y: box[1],
+                        width: box[2] - box[0],
+                        height: box[3] - box[1]
+                    },
+                    class: CLASS_NAMES[classId],
+                    score: score
+                });
             });
-        });
 
-        return predictions;
-    }
+            return predictions;
+        }
 
     // 検出処理の開始
     async function startDetection() {
@@ -263,9 +278,6 @@
 
         updateMessage("カメラを起動中...");
         await startCamera();
-
-        //カメラの解像度に合わせてCanvasのサイズを設定
-        resizeCanvas();
 
         isRunning = true;
         stopButton.disabled = false;
@@ -295,56 +307,56 @@
       stopButton.disabled = true;
       updateMessage('停止しました');
     }
-    // フレームごとの検出処理
-    async function detectFrame() {
-        if (!isRunning) return;
+        // フレームごとの検出処理
+        async function detectFrame() {
+            if (!isRunning) return;
 
-        const tensor = preprocess(video);
-        try {
-            const outputs = await model.execute(tensor);
+            const tensor = preprocess(video);
+            try {
+                const outputs = await model.execute(tensor);
 
-            // outputs の構造を確認 (コンソールに出力)
-            console.log("outputs:", outputs);
-        
-            const postprocessedPredictions = await postprocess(
-                outputs, // outputs[0] または適切なキー
-                video.videoWidth,
-                video.videoHeight
-            );
+                // outputs の構造を確認 (コンソールに出力)
+                console.log("outputs:", outputs);
 
-            tf.dispose(tensor);
-            outputs.dispose();
+                const postprocessedPredictions = await postprocess(
+                  outputs, // outputs[0] または適切なキー
+                  video.videoWidth,
+                  video.videoHeight
+                );
 
-            drawPredictions(postprocessedPredictions);
-        } catch (error) {
-            // 変更: model.execute() からのエラーを直接出力
-            console.error("Error in model.execute():", error);
-            updateMessage("推論中にエラーが発生しました");
-            stopDetection();
+                tf.dispose(tensor);
+                outputs.dispose();
+
+                drawPredictions(postprocessedPredictions);
+            } catch (error) {
+                // 変更: model.execute() からのエラーを直接出力
+                console.error("Error in model.execute():", error);
+                updateMessage("推論中にエラーが発生しました");
+                stopDetection();
+            }
+            animationFrameId = requestAnimationFrame(detectFrame);
         }
-        animationFrameId = requestAnimationFrame(detectFrame);
-    }
 
     // 検出結果の描画
     function drawPredictions(predictions) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);  //描画前に毎回消去を行う
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);  //描画前に毎回消去を行う
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        predictions.forEach(prediction => {
-            const { x, y, width, height } = prediction.bbox;
-            const className = prediction.class;
-            const color = classColors[className] || '#FFFFFF'; // クラスに対応する色を取得
+      predictions.forEach(prediction => {
+        const {x, y, width, height} = prediction.bbox;
+        const className = prediction.class;
+        const color = classColors[className] || '#FFFFFF'; // クラスに対応する色を取得
 
-            // Draw bounding box
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 4;
-            ctx.strokeRect(x, y, width, height);
+        // Draw bounding box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, y, width, height);
 
-            // Draw label
-            ctx.fillStyle = color;
-            ctx.font = '16px Arial';
-            ctx.fillText(`${className} ${Math.round(prediction.score * 100)}%`, x, y - 5);
-        });
+        // Draw label
+        ctx.fillStyle = color;
+        ctx.font = '16px Arial';
+        ctx.fillText(`${className} ${Math.round(prediction.score * 100)}%`, x, y - 5);
+      });
     }
 
     // エラー処理
@@ -355,7 +367,7 @@
             errorMessage = 'カメラへのアクセスが許可されていません';
         } else if (error.name === 'NotFoundError') {
             errorMessage = 'カメラが見つかりません';
-        } else if (error.name === 'NotReadableError') { //追加：カメラが他のアプリで使用されている
+        } else if (error.name === 'NotReadableError') { //追加：カメラが他のアプリケーションによって使用されている
             errorMessage = "カメラが他のアプリケーションによって使用されているため、アクセスできません。"
         }
         updateMessage(errorMessage);
@@ -364,6 +376,11 @@
 
     // キャンバスのリサイズ
     function resizeCanvas() {
+        const container = document.querySelector('.container');
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        
+        //canvasのアスペクト比をカメラのものと一致させる
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
     }
@@ -397,6 +414,7 @@
     window.addEventListener('load', async () => {
       initDOMElements();        //DOM要素の取得
       setupEventListeners();     //イベントリスナーの設定
+      resizeCanvas();             //キャンバスのサイズを設定
       updateMessage('準備完了');    //準備完了メッセージを表示
     });
   </script>
