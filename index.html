@@ -278,10 +278,15 @@
               });
         
               // 正規化された座標を画像サイズに変換
-              const x1 = Math.max(0, x * originalWidth);
-              const y1 = Math.max(0, y * originalHeight);
-              const width = Math.min(w * originalWidth, originalWidth - x1);
-              const height = Math.min(h * originalHeight, originalHeight - y1);
+              //const x1 = Math.max(0, x * originalWidth);
+              //const y1 = Math.max(0, y * originalHeight);
+              //const width = Math.min(w * originalWidth, originalWidth - x1);
+              //const height = Math.min(h * originalHeight, originalHeight - y1);
+
+              const x1 = x;      // すでにピクセル単位で出力されている場合
+              const y1 = y;
+              const width = w;
+              const height = h;
         
               // 画像の範囲内に収まるように調整
               if (width > 0 && height > 0) {
