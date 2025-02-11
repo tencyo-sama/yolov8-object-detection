@@ -253,36 +253,34 @@
 
     // 検出処理
     async function detectFrame() {
-      if (!isRunning) return;
+        if (!isRunning) return;
 
-      const tensor = preprocess(video);
-      try {
-        const outputs = await model.executeAsync(tensor);
+        const tensor = preprocess(video);
+        try {
+            const outputs = await model.execute(tensor); // execute() に戻す
 
-        // モデルの出力形式を確認 (最初の1回だけ)
-        if (!model.outputShapes) {
-          model.outputShapes = outputs.map(t => t.shape);
-          console.log("Model output shapes:", model.outputShapes);
+            // outputs の構造を確認 (コンソールに出力)
+            console.log("outputs:", outputs);
+
+            // 出力テンソルを取り出す (例: outputs[0], outputs.output0, outputs.predictions など)
+            const outputTensor = outputs; // ここは、実際の outputs の構造に合わせて変更
+
+            const postprocessedPredictions = await postprocess(
+                outputTensor, // outputTensor を渡す
+                video.videoWidth,
+                video.videoHeight
+            );
+
+            tf.dispose(tensor);
+            tf.dispose(outputTensor); // outputTensor を解放
+
+            drawPredictions(postprocessedPredictions);
+        } catch (error) {
+            console.error("Error in detectFrame:", error);
+            updateMessage("推論中にエラーが発生しました");
+            stopDetection();
         }
-         // outputs の構造を確認 (コンソールに出力)
-        console.log("outputs:", outputs);
-        const postprocessedPredictions = await postprocess(
-          outputs[0], // 最初のテンソルを取り出す
-          video.videoWidth,
-          video.videoHeight
-        );
-
-        tf.dispose(tensor);
-        tf.dispose(outputs[0]); // outputs 全体を dispose
-
-        drawPredictions(postprocessedPredictions);
-      } catch (error) {
-        console.error("Error in detectFrame:", error);
-        updateMessage("推論中にエラーが発生しました");
-        stopDetection();
-      }
-
-      animationFrameId = requestAnimationFrame(detectFrame);
+        animationFrameId = requestAnimationFrame(detectFrame);
     }
 
     // 描画処理
