@@ -7,7 +7,7 @@
   <!-- TensorFlow.js の読み込み -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <style>
-     body {
+  body {
       margin: 0;
       padding: 0;
       width: 100vw;
@@ -30,7 +30,7 @@
       /* object-fit: cover;  コンテナに合わせる場合はこれを使う */
     }
     /* ... (その他のスタイルは変更なし) ... */
-    .button-container {
+        .button-container {
       position: fixed;
       bottom: 20px;
       width: 100%;
@@ -112,6 +112,11 @@
 
     // クラス名 (今回は Clip のみ)
     const CLASS_NAMES = ['clip'];
+        //色の設定
+    const classColors = {};
+    CLASS_NAMES.forEach((className) => {
+        classColors[className] = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+    });
 
     // DOM要素の取得と初期化
     function initDOMElements() {
@@ -175,7 +180,7 @@
     }
 
     // 後処理 (NMS, 座標変換)
-   async function postprocess(outputTensor, originalWidth, originalHeight) {
+     async function postprocess(outputTensor, originalWidth, originalHeight) {
         const numPredictions = outputTensor.shape[1]; // 予測の数 (例: 8400)
         const numClasses = outputTensor.shape[2] - 5; // クラス数 (例: 80)  今回は1つしかないはず
         const data = await outputTensor.data(); // データを取得
@@ -275,7 +280,7 @@
 
       const tensor = preprocess(video);
       try {
-        const outputs = await model.execute(tensor);
+        const outputs = await model.executeAsync(tensor);
 
         // モデルの出力形式を確認 (最初の1回だけ)
         if (!model.outputShapes) {
@@ -284,7 +289,7 @@
         }
         
         // 出力テンソルを取り出す (例: outputs[0] または outputs.output0 など)
-        const outputTensor = outputs; //
+        const outputTensor = outputs[0]; //
 
         const postprocessedPredictions = await postprocess(
           outputTensor, // outputTensor を渡す
