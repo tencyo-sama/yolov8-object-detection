@@ -253,13 +253,14 @@
     
           // 各アンカーボックスについて処理
           for (let i = 0; i < transposed.shape[1]; i++) {
-            const baseOffset = i * 5;  // 5値（x,y,w,h,conf）
-            const confidence = outputData[baseOffset + 4];
-      
+            const baseOffset = i * 5;  // 5値（おそらく [x, y, w, h, raw_confidence]）
+            const rawConfidence = outputData[baseOffset + 4];
+            // シグモイド関数を適用して確率に変換する
+            const confidence = 1 / (1 + Math.exp(-rawConfidence));
+  
             maxConfidence = Math.max(maxConfidence, confidence);
-      
+
             if (confidence > this.SCORE_THRESHOLD) {
-              confidentDetections++;
         
               // YOLOv8の出力から座標を取得
               const x = outputData[baseOffset + 0];
@@ -285,15 +286,11 @@
               // 画像の範囲内に収まるように調整
               if (width > 0 && height > 0) {
                 predictions.push({
-                  bbox: {
-                    x: x1,
-                    y: y1,
-                    width: width,
-                    height: height
-                  },
+                  bbox: { x: x1, y: y1, width, height },
                   class: this.CLASS_NAMES[0],
                   score: confidence
                 });
+                confidentDetections++;
               }
             }
           }
