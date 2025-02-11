@@ -175,10 +175,10 @@
     }
 
     // 後処理 (NMS, 座標変換)
-     async function postprocess(outputs, originalWidth, originalHeight) {
-        const numPredictions = outputs.shape[1]; // 予測の数 (例: 8400)
-        const numClasses = outputs.shape[2] - 5; // クラス数 (例: 80)
-        const data = await outputs.data(); // データを取得
+     async function postprocess(outputTensor, originalWidth, originalHeight) {
+        const numPredictions = outputTensor.shape[1]; // 予測の数 (例: 8400)
+        const numClasses = outputTensor.shape[2] - 5; // クラス数 (例: 80)
+        const data = await outputTensor.data(); // データを取得
 
         const boxes = [];
         const scores = [];
@@ -273,7 +273,7 @@
         );
 
         tf.dispose(tensor);
-        tf.dispose(outputs); // outputs 全体を dispose
+        tf.dispose(outputs[0]); // outputs 全体を dispose
 
         drawPredictions(postprocessedPredictions);
       } catch (error) {
