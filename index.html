@@ -138,8 +138,8 @@
         const constraints = {
             video: {
                 facingMode: 'environment',
-                width: { ideal: 640 },
-                height: { ideal: 640 }
+                width: { exact: 640 },  // exact を指定
+                height: { exact: 640 } // exact を指定
             }
         };
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -157,7 +157,11 @@
     function preprocess(video) {
         let tensor = tf.browser.fromPixels(video);
         const resized = tensor.resizeBilinear([MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT]); // リサイズ処理を追加
-        const batched = tensor.expandDims(0);
+       // リサイズ後の形状を検証
+        if (resized.shape[0] !== MODEL_INPUT_HEIGHT || resized.shape[1] !== MODEL_INPUT_WIDTH) {
+            throw new Error(`リサイズ後の形状が期待される ${MODEL_INPUT_WIDTH}x${MODEL_INPUT_HEIGHT} と異なります。実際の形状: ${resized.shape[0]}x${resized.shape[1]}`);
+        }
+        const batched = resized.expandDims(0);
         return batched.toFloat().div(tf.scalar(255));   // 0-255 -> 0-1 に正規化
     }
 
@@ -181,7 +185,7 @@
     }
 
     // 検出結果を後処理して、描画可能な形にする関数
-        async function postprocess(outputs, originalWidth, originalHeight) {
+    async function postprocess(outputs, originalWidth, originalHeight) {
             // 1. テンソルを転置 (transpose)
             const transposed = tf.transpose(outputs, [0, 2, 1]);
 
@@ -207,21 +211,17 @@
                 let x2 = data[offset + 3];  // バウンディングボックスの右下隅 x 座標
                 let y2 = data[offset + 4];  // バウンディングボックスの右下隅 y 座標
            
-                // 検証: 座標の値を出力
+         // 検証: 座標の値を出力
         console.log("予測", i, "座標:", x1, y1, x2, y2, "信頼度:", confidence);
-
-                // 信頼度が低い場合はスキップ
+        
+        // 信頼度が低い場合はスキップ
                 if (confidence < SCORE_THRESHOLD) continue;
-
-                //スケールバックは不要
-                const scaleX = originalWidth / MODEL_INPUT_WIDTH;
-                const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
-
-                x1 = x1 * scaleX;
-                y1 = y1 * scaleY;
-                x2 = x2 * scaleX;
-                y2 = y2 * scaleY;
-
+  
+               // 座標が画面外に出ないようにクリップ
+                x1 = Math.max(0, Math.min(x1, originalWidth));
+                y1 = Math.max(0, Math.min(y1, originalHeight));
+                x2 = Math.max(0, Math.min(x2, originalWidth));
+                y2 = Math.max(0, Math.min(y2, originalHeight));
                 boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
                 scores.push(confidence);
                 classIds.push(0); // クラスが1つしかないため、常に 0
@@ -243,23 +243,31 @@
                 const classId = classIds[index];
                 const score = scores[index];
 
-                // スケールバック (元の画像のサイズに合わせる)
-
-                const scaleX = originalWidth / MODEL_INPUT_WIDTH;
+                 const scaleX = originalWidth / MODEL_INPUT_WIDTH;
                 const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
 
-                const x1 = box[0] * scaleX;
-                const y1 = box[1] * scaleY;
-                const x2 = box[2] * scaleX;
-                const y2 = box[3] * scaleY;
+                const x1 = box[0];
+                const y1 = box[1];
+                const x2 = box[2];
+                const y2 = box[3];
                 const width = (x2 - x1);
                 const height = (y2 - y1);
 
-        // 座標が画面外に出ないようにクリップ
-        x1 = Math.max(0, Math.min(x1, originalWidth));
-        y1 = Math.max(0, Math.min(y1, originalHeight));
-        x2 = Math.max(0, Math.min(x2, originalWidth));
-        y2 = Math.max(0, Math.min(y2, originalHeight));
+            /*
+            // スケールバック (元の画像のサイズに合わせる)
+
+            const scaleX = originalWidth / MODEL_INPUT_WIDTH;
+            const scaleY = originalHeight / MODEL_INPUT_HEIGHT;
+
+            const x1 = box[0] * scaleX;
+            const y1 = box[1] * scaleY;
+            const x2 = box[2] * scaleX;
+            const y2 = box[3] * scaleY;
+            const width = (x2 - x1);
+            const height = (y2 - y1);
+
+            */
+
                 predictions.push({
                     bbox: {
                         x: x1, // スケールバック済みの座標を使用
@@ -281,13 +289,18 @@
         updateMessage("モデルを読み込み中...");
         showLoading(true);
         startButton.disabled = true;
-
-        if(!model){
+       if(!model){
           model = await loadModel();
         }
 
         updateMessage("カメラを起動中...");
         await startCamera();
+
+    video.addEventListener('loadedmetadata', () => {
+      console.log("video width:", video.videoWidth);
+      console.log("video height:", video.videoHeight);
+    });
+
 
         isRunning = true;
         stopButton.disabled = false;
@@ -386,10 +399,14 @@
 
     // キャンバスのリサイズ
     function resizeCanvas() {
+    
+    //canvasのアスペクト比をカメラのものと一致させる
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
         const container = document.querySelector('.container');
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
-    }
+        container.style.width = `${video.videoWidth}px`;
+        container.style.height = `${video.videoHeight}px`;
+}
 
     // ローディング表示の切り替え
     function showLoading(show) {
@@ -420,8 +437,7 @@
     window.addEventListener('load', async () => {
       initDOMElements();        //DOM要素の取得
       setupEventListeners();     //イベントリスナーの設定
-      resizeCanvas();             //キャンバスのサイズを設定
-      updateMessage('準備完了');    //準備完了メッセージを表示
+       updateMessage('準備完了');    //準備完了メッセージを表示
     });
   </script>
 </body>
