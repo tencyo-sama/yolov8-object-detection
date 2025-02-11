@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YOLOv8 Object Detection</title>
-  <!-- TensorFlow.js の読み込み (バージョンを指定) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.2.0/dist/tf.min.js"></script>
+  <!-- TensorFlow.js の読み込み -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <style>
   body {
       margin: 0;
@@ -112,11 +112,6 @@
 
     // クラス名 (今回は Clip のみ)
     const CLASS_NAMES = ['clip'];
-        //色の設定
-    const classColors = {};
-    CLASS_NAMES.forEach((className) => {
-        classColors[className] = '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
-    });
 
     // DOM要素の取得と初期化
     function initDOMElements() {
@@ -180,99 +175,84 @@
     }
 
     // 後処理 (NMS, 座標変換)
-     async function postprocess(outputTensor, originalWidth, originalHeight) {
-        const numPredictions = outputTensor.shape[1]; // 予測の数 (例: 8400)
-        const numClasses = outputTensor.shape[2] - 5; // クラス数 (例: 80)  今回は1つしかないはず
-        const data = await outputTensor.data(); // データを取得
+async function postprocess(outputTensor, originalWidth, originalHeight) {
+  const numPredictions = outputTensor.shape[1];
+  const numClasses = outputTensor.shape[2] - 5;
+  const data = await outputTensor.data();
 
-        const boxes = [];
-        const scores = [];
-        const classIds = [];
+  const boxes = [];
+  const scores = [];
+  const classIds = [];
 
-      // 各予測について
-        for (let i = 0; i < numPredictions; i++) {
-          const offset = i * (numClasses + 5);
+  // 各予測について
+  for (let i = 0; i < numPredictions; i++) {
+    const offset = i * (numClasses + 5);
 
-        // データの抽出
-          let x = data[offset];        // バウンディングボックスの中心 x 座標
-          let y = data[offset + 1];      // バウンディングボックスの中心 y 座標
-          let width = data[offset + 2];  // バウンディングボックスの幅
-          let height = data[offset + 3]; // バウンディングボックスの高さ
-          const confidence = data[offset + 4]; // 信頼度
+    // データの抽出
+    let confidence = data[offset + 4]; // 信頼度
+    let x = data[offset + 0]      //bounding boxの中心x座標
+    let y = data[offset + 1]       //bounding boxの中心y座標
+    let width = data[offset + 2];     //bounding boxの幅
+    let height = data[offset + 3];    //bounding boxの高さ
 
-            // デバッグ: 生の値を出力
-            console.log("Raw prediction data:", x, y, width, height, confidence);
+    // 信頼度が低い場合はスキップ
+    if (confidence < SCORE_THRESHOLD) continue;
 
-            // 信頼度が低い場合はスキップ
-            if (confidence < SCORE_THRESHOLD) continue;
+    // xywh から xyxy 形式に変換
+    let x1 = x - width / 2;
+    let y1 = y - height / 2;
+    let x2 = x + width / 2;
+    let y2 = y + height / 2;
 
-            // クラススコアの処理 (今回はクラスが1つなので不要)
-            /*
-            const classScores = data.slice(offset + 5, offset + 5 + numClasses);
-            let maxScore = -Infinity;
-            let maxClassId = -1;
-            for (let j = 0; j < numClasses; j++) {
-                if (classScores[j] > maxScore) {
-                    maxScore = classScores[j];
-                    maxClassId = j;
-                }
-            }
-            if (maxScore < SCORE_THRESHOLD) continue;
-            */
+    // スケールバック (モデルの出力が正規化されている場合)
+    x1 *= originalWidth;
+    y1 *= originalHeight;
+    x2 *= originalWidth;
+    y2 *= originalHeight;
 
-            // xywh から xyxy 形式に変換 (モデルの出力形式に合わせて調整)
-            let x1 = x - width / 2;
-            let y1 = y - height / 2;
-            let x2 = x + width / 2;
-            let y2 = y + height / 2;
+    boxes.push([x1, y1, x2, y2]);
+    scores.push(confidence);
+    classIds.push(0); // クラスは常に 0 (Clip)
+  }
 
-            // デバッグ: 変換後の座標を出力
-            console.log("Transformed coordinates (before scale):", x1, y1, x2, y2);
+  // NMS (省略可能)
+  const nmsIndices = await tf.image.nonMaxSuppressionAsync(
+    tf.tensor2d(boxes),
+    tf.tensor1d(scores),
+    10, // maxOutputSize
+    IOU_THRESHOLD, // iouThreshold
+    SCORE_THRESHOLD // scoreThreshold
+  );
 
-            // スケールバック (モデルの出力が正規化されている場合)
-            x1 *= originalWidth;
-            y1 *= originalHeight;
-            x2 *= originalWidth;
-            y2 *= originalHeight;
+  const predictions = [];
 
-            // デバッグ: スケールバック後の座標を出力
-            console.log("Scaled coordinates:", x1, y1, x2, y2);
+  // NMS で選択された予測のみを処理
+  for (const i of nmsIndices.dataSync()) {
+    const box = boxes[i];
+    const score = scores[i];
+    const classId = classIds[i];
+    
+    const x1 = box[0];
+    const y1 = box[1];
+    const x2 = box[2];
+    const y2 = box[3];
+    const width = x2 - x1;
+    const height = y2 - y1;
 
+    predictions.push({
+      bbox: {
+        x: x1,
+        y: y1,
+        width: width,
+        height: height
+      },
+      class: CLASS_NAMES[classId],
+      score: score
+    });
+  }
 
-            boxes.push([x1, y1, x2, y2]); // xyxy 形式で保存
-            scores.push(confidence); // 信頼度をそのまま使用 (クラス分類がないため)
-            classIds.push(0); // クラスは常に 0 (Clip)
-        }
-
-        // NMS (Non-Maximum Suppression)
-        const nmsIndices = await tf.image.nonMaxSuppressionAsync(
-            tf.tensor2d(boxes),
-            tf.tensor1d(scores),
-            10, // maxOutputSize
-            IOU_THRESHOLD, // iouThreshold
-            SCORE_THRESHOLD // scoreThreshold
-        );
-
-        const predictions = [];
-        // NMS で選択された予測のみを処理
-        for (const i of nmsIndices.dataSync()) {
-            const box = boxes[i];
-            const score = scores[i];
-            const classId = classIds[i];
-
-            predictions.push({
-                bbox: {
-                    x: box[0],
-                    y: box[1],
-                    width: box[2] - box[0],
-                    height: box[3] - box[1]
-                },
-                class: CLASS_NAMES[classId],
-                score: score
-            });
-        }
-        return predictions;
-    }
+  return predictions;
+}
 
     // 検出処理
     async function detectFrame() {
@@ -280,7 +260,7 @@
 
       const tensor = preprocess(video);
       try {
-        const outputs = await model.executeAsync(tensor);
+         const outputs = await model.execute(tensor);
 
         // モデルの出力形式を確認 (最初の1回だけ)
         if (!model.outputShapes) {
