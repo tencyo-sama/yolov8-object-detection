@@ -224,28 +224,59 @@
 
       async postprocess(outputTensor, originalWidth, originalHeight) {
         try {
+          // デバッグ情報：元のテンソル形状を出力
+          console.log('Original output tensor shape:', outputTensor.shape);
+    
+          // 最小値と最大値を確認
+          const minMax = await tf.tidy(() => {
+            const min = outputTensor.min();
+            const max = outputTensor.max();
+            return [min.dataSync()[0], max.dataSync()[0]];
+          });
+          console.log('Value range:', minMax);
+
+          // テンソルの一部のデータをサンプリングして確認
+          const sampleData = await outputTensor.slice([0, 0, 0], [1, 5, 10]).data();
+          console.log('Sample of first 10 predictions:', sampleData);
+
           // 出力テンソルを転置して扱いやすい形式に変換
-          const transposed = outputTensor.transpose([0, 2, 1]);
-          const [batch, anchors, data] = transposed.shape;
+          const transposed = tf.tidy(() => outputTensor.transpose([0, 2, 1]));
+          console.log('Transposed shape:', transposed.shape);
     
           // データを取得
           const outputData = await transposed.data();
           const predictions = [];
     
+          // 信頼度スコアの統計を取る
+          let maxConfidence = 0;
+          let confidentDetections = 0;
+    
           // 各アンカーボックスについて処理
-          for (let i = 0; i < anchors; i++) {
-            const baseOffset = i * data;
+          for (let i = 0; i < transposed.shape[1]; i++) {
+            const baseOffset = i * 5;  // 5値（x,y,w,h,conf）
             const confidence = outputData[baseOffset + 4];
       
+            maxConfidence = Math.max(maxConfidence, confidence);
+      
             if (confidence > this.SCORE_THRESHOLD) {
+              confidentDetections++;
+        
               // YOLOv8の出力から座標を取得
               const x = outputData[baseOffset + 0];
               const y = outputData[baseOffset + 1];
               const w = outputData[baseOffset + 2];
               const h = outputData[baseOffset + 3];
         
+              // デバッグ情報：検出された座標を出力
+              console.log('Detection found:', {
+                confidence,
+                x: x * originalWidth,
+                y: y * originalHeight,
+                w: w * originalWidth,
+                h: h * originalHeight
+              });
+        
               // 正規化された座標を画像サイズに変換
-              // YOLOv8は0-1の範囲で出力するため、直接乗算でOK
               const x1 = Math.max(0, x * originalWidth);
               const y1 = Math.max(0, y * originalHeight);
               const width = Math.min(w * originalWidth, originalWidth - x1);
@@ -267,13 +298,28 @@
             }
           }
     
-          // リソースの解放
-          tf.dispose(transposed);
+          // 検出統計の出力
+          console.log('Detection stats:', {
+            maxConfidence,
+            confidentDetections,
+            totalPredictions: predictions.length
+          });
     
-          // 重複する検出結果をフィルタリング
-          return this.nms(predictions);
+          // リソースの解放
+          tf.dispose([transposed]);
+    
+          // NMSを適用
+          const finalPredictions = this.nms(predictions);
+          console.log('Final predictions after NMS:', finalPredictions.length);
+    
+          return finalPredictions;
         } catch (error) {
           console.error('Postprocess error:', error);
+          console.error('Error details:', {
+            tensorShape: outputTensor.shape,
+            tensorRank: outputTensor.rank,
+            tensorDtype: outputTensor.dtype
+          });
           throw error;
         }
       }
@@ -360,19 +406,25 @@
 
         try {
           const inputTensor = this.preprocess(this.video);
+          console.log('Input tensor shape:', inputTensor.shape);
+    
+          // モデルの予測を実行
+          console.log('Running model prediction...');
           const outputTensor = this.model.predict(inputTensor);
-          
+          console.log('Prediction completed');
+    
+          // 予測結果の処理
           const predictions = await this.postprocess(
             outputTensor,
             this.video.videoWidth,
             this.video.videoHeight
-          );
+        );
 
           this.drawPredictions(predictions);
-          
+    
           // Tensorのクリーンアップ
           tf.dispose([inputTensor, outputTensor]);
-          
+    
           requestAnimationFrame(() => this.detectFrame());
         } catch (error) {
           console.error('Detection error:', error);
