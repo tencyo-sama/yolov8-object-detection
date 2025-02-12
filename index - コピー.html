@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>クリップ検出アプリ - YOLOv8</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: #f5f5f5;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 640px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    .video-container {
+      position: relative;
+      width: 100%;
+      background-color: #000;
+    }
+
+    #output {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    #input {
+      display: none;
+    }
+
+    .controls {
+      padding: 20px;
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+
+    .button {
+      padding: 12px 24px;
+      font-size: 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      font-weight: 500;
+      min-width: 120px;
+    }
+
+    .button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #start {
+      background-color: #4CAF50;
+      color: white;
+    }
+
+    #start:hover:not(:disabled) {
+      background-color: #45a049;
+    }
+
+    #stop {
+      background-color: #f44336;
+      color: white;
+    }
+
+    #stop:hover:not(:disabled) {
+      background-color: #da190b;
+    }
+
+    .status {
+      background-color: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      margin-top: 10px;
+      text-align: center;
+      font-size: 18px;
+    }
+
+    .count {
+      font-weight: bold;
+      color: #4CAF50;
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 10px;
+      }
+
+      .controls {
+        flex-direction: column;
+        padding: 15px;
+      }
+
+      .button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="video-container">
+      <canvas id="output"></canvas>
+      <video id="input" playsinline autoplay muted></video>
+    </div>
+    <div class="controls">
+      <button id="start" class="button">開始</button>
+      <button id="stop" class="button" disabled>停止</button>
+    </div>
+  </div>
+  <div id="clipCount" class="status">
+    検出されたクリップ: <span class="count">0</span>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.8/dist/tf-tflite.min.js"></script>
+
+  <script>
+    let model;
+    let labels;
+    let isRunning = false;
+
+    const video = document.getElementById('input');
+    const canvas = document.getElementById('output');
+    const ctx = canvas.getContext('2d');
+    const startButton = document.getElementById('start');
+    const stopButton = document.getElementById('stop');
+    const clipCountElement = document.querySelector('#clipCount .count');
+
+    async function loadModelAndLabels() {
+      console.log("loadModelAndLabels 開始");
+      try {
+        model = await tflite.loadTFLiteModel('./yolov8s_best_float16.tflite');
+        console.log("モデル読み込み成功:", model);
+        const labelsResponse = await fetch('./labels.txt');
+        const labelsText = await labelsResponse.text();
+        labels = labelsText.trim().split('\n');
+        console.log("ラベル読み込み成功:", labels);
+      } catch (error) {
+        console.error('モデルまたはラベルの読み込みエラー:', error);
+        throw error;
+      }
+    }
+
+    async function setupCamera() {
+      try {
+        const constraints = {
+          'video': {
+            facingMode: 'environment',
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        };
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+
+        return new Promise((resolve) => {
+          video.onloadedmetadata = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            resolve();
+          };
+        });
+      } catch (error) {
+        console.error("カメラセットアップエラー:", error);
+        alert("カメラへのアクセスに失敗しました。カメラの使用を許可してください。");
+        throw error;
+      }
+    }
+
+    function calculateIoU(box1, box2) {
+      const x1 = Math.max(box1[0], box2[0]);
+      const y1 = Math.max(box1[1], box2[1]);
+      const x2 = Math.min(box1[0] + box1[2], box2[0] + box2[2]);
+      const y2 = Math.min(box1[1] + box1[3], box2[1] + box2[3]);
+
+      const intersectionWidth = Math.max(0, x2 - x1);
+      const intersectionHeight = Math.max(0, y2 - y1);
+      const intersectionArea = intersectionWidth * intersectionHeight;
+
+      const box1Area = box1[2] * box1[3];
+      const box2Area = box2[2] * box2[3];
+      const unionArea = box1Area + box2Area - intersectionArea;
+
+      return intersectionArea / unionArea;
+    }
+
+    function nms(boxes, scores, iouThreshold) {
+      const selectedIndices = [];
+      const sortedIndices = scores
+        .map((score, index) => [score, index])
+        .sort((a, b) => b[0] - a[0])
+        .map(item => item[1]);
+
+      while (sortedIndices.length > 0) {
+        const bestIndex = sortedIndices.shift();
+        selectedIndices.push(bestIndex);
+
+        for (let i = sortedIndices.length - 1; i >= 0; i--) {
+          const currentIndex = sortedIndices[i];
+          const iou = calculateIoU(boxes[bestIndex], boxes[currentIndex]);
+          if (iou > iouThreshold) {
+            sortedIndices.splice(i, 1);
+          }
+        }
+      }
+
+      return selectedIndices;
+    }
+
+    async function detectFrame() {
+      if (!isRunning || !model || !labels) {
+        return;
+      }
+
+      tf.engine().startScope();
+
+      try {
+        const img = tf.browser.fromPixels(video);
+        const resized = tf.image.resizeBilinear(img, [640, 640]);
+        const normalized = tf.div(resized, 255.0);
+        const batched = tf.expandDims(normalized, 0);
+
+        const output = await model.predict(batched);
+        const outputData = await output.data();
+
+        const boxes = [];
+        const scores = [];
+        const classIds = [];
+
+        const numFeatures = 8400;
+        const numChannels = 5;
+
+        for (let i = 0; i < numFeatures; i++) {
+          const confidence = outputData[4 * numFeatures + i];
+          
+          if (confidence > 0.25) {
+            const x = outputData[0 * numFeatures + i];
+            const y = outputData[1 * numFeatures + i];
+            const w = outputData[2 * numFeatures + i];
+            const h = outputData[3 * numFeatures + i];
+
+            const imageWidth = video.videoWidth;
+            const imageHeight = video.videoHeight;
+            
+            const left = (x - w/2) * imageWidth;
+            const top = (y - h/2) * imageHeight;
+            const width = w * imageWidth;
+            const height = h * imageHeight;
+
+            boxes.push([left, top, width, height]);
+            scores.push(confidence);
+            classIds.push(0);
+          }
+        }
+
+        const selectedIndices = nms(boxes, scores, 0.45);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // 検出数を更新
+        clipCountElement.textContent = selectedIndices.length.toString();
+
+        selectedIndices.forEach(idx => {
+          const [x, y, width, height] = boxes[idx];
+          const score = scores[idx];
+          const label = `${labels[0]}: ${score.toFixed(2)}`;
+
+          ctx.strokeStyle = 'red';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, width, height);
+
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+          ctx.font = '16px Arial';
+          const metrics = ctx.measureText(label);
+          const padding = 4;
+          
+          ctx.fillRect(x, y - 24, metrics.width + 2 * padding, 24);
+          
+          ctx.fillStyle = 'white';
+          ctx.fillText(label, x + padding, y - 6);
+        });
+
+      } catch (error) {
+        console.error("検出エラー:", error);
+      } finally {
+        tf.engine().endScope();
+        requestAnimationFrame(detectFrame);
+      }
+    }
+
+    startButton.addEventListener('click', async () => {
+      startButton.disabled = true;
+      try {
+        await loadModelAndLabels();
+        await setupCamera();
+        isRunning = true;
+        stopButton.disabled = false;
+        detectFrame();
+      } catch (error) {
+        console.error("初期化エラー:", error);
+        startButton.disabled = false;
+        alert("カメラの初期化に失敗しました。ページを更新して再度お試しください。");
+      }
+    });
+
+    stopButton.addEventListener('click', () => {
+      isRunning = false;
+      stopButton.disabled = true;
+      startButton.disabled = false;
+      clipCountElement.textContent = "0";
+
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(track => track.stop());
+        video.srcObject = null;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    });
+
+    // ウィンドウのリサイズ時にcanvasのサイズを調整
+    window.addEventListener('resize', () => {
+      if (video.videoWidth) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -2,7 +2,7 @@ import yaml
 from ultralytics import YOLO
 
 # yolo8n.pt to tensorflow lite
-model = YOLO('yolov8s_best.pt')
+model = YOLO('yolo11n_best.pt')
 model.export(format='tflite')
 
 # metadata.yaml to labels.txt

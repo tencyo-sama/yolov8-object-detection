@@ -154,7 +154,7 @@
     async function loadModelAndLabels() {
       console.log("loadModelAndLabels 開始");
       try {
-        model = await tflite.loadTFLiteModel('./yolov8s_best_float16.tflite');
+        model = await tflite.loadTFLiteModel('./yolo11n_best_float16.tflite');
         console.log("モデル読み込み成功:", model);
         const labelsResponse = await fetch('./labels.txt');
         const labelsText = await labelsResponse.text();
